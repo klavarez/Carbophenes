@@ -1,0 +1,642 @@
+
+---
+output:
+  html_document:
+    toc: no
+    fig_caption: yes
+  pdf_document:
+    fig_caption: yes
+    number_sections: yes
+    toc: no
+
+title: "Outreach melting"
+author:
+- name: Chad E. Junkermeier
+  affiliation:  Materials Computation Laboratory, University of Hawai`i Maui College, Kahului HI 96732, USA
+- name: Pal I. Casinto  
+  affiliation:  Materials Computation Laboratory, University of Hawai`i Maui College, Kahului HI 96732, USA
+- name: Ricardo Paupitz
+  affiliation: Departamento de Fisica, IGCE, Universidade Estadual Paulista, UNESP, 13506-900, Rio Claro, SP, Brazil
+
+
+
+abstract: "N-Carbophenes are a class of two-dimensional hydrocarbons consisting of alternating units of cyclobutene and cyclohexatriene.  In this work we used reactive force field molecular dynamics simulations to model the onset of melting in carbophenes.  Each MD simulation starts from independent initial conditions and linearly increases temperature from 10 K to 2010 K.  The MD simulation was then analyzed to determine the time-step (linearly related to temperature) at which the first bond breaks.  Besides the time-step, the type of bond and where the bond is located is also recorded.  In this document, we clean the data and analyze the results."
+keywords: "N-carbophenes, carbophenes, melting, statistics"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+
+spacing: double
+bibliography: carbophene.bib
+biblio-style: apsr
+---
+
+```{r, include=FALSE, echo = FALSE, comment="", warning = FALSE,message = FALSE, include=FALSE}
+invisible(library(tidyverse))
+library(captioner)
+library(gsheet)
+library(plotrix)
+library(reactable)
+library(dplyr)
+library(glue)
+library(broom)
+library(ggtext)
+library(readxl)
+library(rstatix)
+library(tseries)
+library(RColorBrewer)  
+library(corrplot)
+library(viridis)
+library(geometry)
+library(DescTools)
+# library(treemapify)
+library(snpar)
+library(rsample)
+library(GGally)
+
+SItable_nums <- captioner(prefix = "SI.Table")
+SIfigure_nums <- captioner(prefix = "SI.Figure")
+
+options(pillar.sigfig = 5)  # This changes the number of significant figures that tidyverse will print in a table.  I changed it so that users, including myself, won't be afraid of a loss of information.
+```
+
+
+```{r, eval=TRUE}
+carbophenes.reviewed.df <- read_rds("/Users/neptoon/Desktop/Carbophenes/CLEANED_MELTING_DATA.rds")
+
+```
+
+
+
+
+## A priori counts of bond types in each model
+
+The following un-numbered figure has images of the size 2 rectangular supercells.  With each image there is a listing of the types of bonds and the number of bonds in the supercell for each type.  There is also a listing of the number of bonds of each type that cross the periodic boundaries; called "Side" in the images.  Note that adding the the total number of bonds and the number of bonds that cross the periodic boundary double counts the bonds that cross the boundary.
+
+
+<br/>
+
+<br/>
+
+
+![Images of the 2-by-2 rectangular supercells for graphenylene, 3-, 4-, and 5-carbophene.  With each supercell there is an enueration of the number of each type of bond.  There is also an enueration of the numer of each type of bond that crosses the periodic boundary.](bondcounting.png)
+
+<br/>
+
+<br/>
+
+We'll turn the information presented in the figure above into the aprioibonds.df dataframe that we can use or reference later; see `r SItable_nums("aprioibonds.cap", display = "cite")`. 
+
+
+
+```{r, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+#### 2-carbophene ###create data frame called carbophene2
+N <- c(2,2,2)
+Type <- c(1,2,3)
+Total <- c(48,48,48)
+Side <- c(4,4,4)
+graphenylene <- tibble(N, Type, Total, Side)
+
+#### 3-carbophene ###create data frame called carbophene3
+N <- c(3,3,3,3,3)
+Type <- c(1,2,3,4,5)
+Total <- c(96,48,48,48,96)
+Side <- c(0,4,4,4,4)
+carbophene3 <- tibble(N, Type, Total, Side)
+
+#### 4-carbophene ###create data frame called carbophene4
+N <- c(4,4,4,4,4,4,4,4)
+Type <- c(1,2,3,4,5,6,7,8)
+Total <- c(96,48,48,48,96,96,48,48)
+Side <- c(0,4,4,4,0,0,4,4)
+carbophene4 <- tibble(N, Type, Total, Side)
+
+#### 5-carbophene ###create data frame called carbophene5 
+N <- c(5,5,5,5,5,5,5,5,5,5)
+Type <- c(1,2,3,4,5,6,7,8,9,10)
+Total <- c(96,48,48,48,96,96,48,48,96,48)
+Side <- c(0,4,4,4,0,0,4,0,4,4)
+carbophene5 <- tibble(N, Type, Total, Side)
+
+aprioibonds.df <- rbind(graphenylene,carbophene3,carbophene4,carbophene5) %>%#combine all previously created data frames by rows
+  mutate(Interior = Total - Side)
+rm(graphenylene,carbophene3,carbophene4,carbophene5)
+```
+
+
+<br/>
+
+<br/>
+```{r, echo = FALSE, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+capaprioibonds.df <- SItable_nums(name = "aprioibonds.cap", caption = "Listing of the rows in the dataframe aprioibonds.df, which consists of the number of bonds that cross the periodic boundary (Side) or don't (Interior) based on the type of carbophene (N) and the type of bond (Type) in the pristine size 2 supercells.")
+```
+
+```{r, fig.cap=capaprioibonds.df, echo = FALSE, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+reactable(as.matrix(aprioibonds.df), showPageSizeOptions = TRUE, pageSizeOptions = c(5, 50), defaultPageSize = 5, striped = TRUE)
+```
+
+
+<br/>
+
+<br/>
+
+
+
+
+
+
+<br/>
+
+<br/>
+
+
+## Determining if there is an over abundance of bonds broken across periodic boundary
+
+The periodic boundaries of supercells are a common place where MD simulations run into trouble.  In relation to our MD results two related problems could exist: first, that the supercell lattice vectors are a little too long causing an over abundance of bonds breaking across the periodic boundaries, the second, is that lattice vectors are a little too short causing too few of the bonds breaking across the periodic boundaries.  We'll use the chi-squared and z- statistics to determine if an appropriate number of bonds were broken on the periodic boundary.  We first need to use `r SItable_nums("aprioibonds.cap", display = "cite")` to determine the total number of bonds in the interior and on the boundary.
+
+
+
+
+```{r, echo = TRUE, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+aprioibonds.totals.df <- aprioibonds.df %>% group_by(N) %>% summarize(Side.total = sum(Side), Interior.total = sum(Interior))
+```
+<br/>
+
+```{r, echo = FALSE, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+capaprioibonds.totals.df <- SItable_nums(name = "aprioibondstotals.cap", caption = "Listing of the number of bonds that cross the periodic boundaries and the number of C-C bonds that don't cross the periodic boundaries in the pristine size 2 supercells.")
+```
+```{r, fig.cap=capaprioibonds.totals.df, echo = FALSE, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+reactable(as.matrix(aprioibonds.totals.df), showPageSizeOptions = TRUE, pageSizeOptions = c(5, 50), defaultPageSize = 5, striped = TRUE)
+```
+
+
+<br/>
+
+<br/>
+
+Using the results of `r SItable_nums("aprioibondstotals.cap", display = "cite")`, we'll define functions that will use the type of carbophene, N, and the Size of the supercell to determine the number of interior and side bonds for each row of a summarized data frame.  Whereas, the edge bonds are just a simple multiple of the number of bonds in the size 2 supercells, the interior bonds are a multiple of the interior atoms in the size 2 supercells plus the number of side bonds of the size 2 supercells that are now interior bonds.  
+
+
+```{r, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+
+expected.edge.func <- Vectorize(function(n, size){
+  if (n == 2 && size == 2) {12}
+  else if (n == 3 && size == 2) {16}
+  else if (n == 4 && size == 2) {20}
+  else if (n == 5 && size == 2) {24}
+
+  else if (n == 2 && size == 4) {12*2}
+  else if (n == 3 && size == 4) {16*2}
+  else if (n == 4 && size == 4) {20*2}
+  else if (n == 5 && size == 4) {24*2}
+
+  else if (n == 2 && size == 6) {12*3}
+  else if (n == 3 && size == 6) {16*3}
+  else if (n == 4 && size == 6) {20*3}
+  else if (n == 5 && size == 6) {24*3}
+})
+
+
+
+expected.interior.func <- Vectorize(function(n, size){
+  if (n == 2 && size == 2) {132}
+  else if (n == 3 && size == 2) {320}
+  else if (n == 4 && size == 2) {508}
+  else if (n == 5 && size == 2) {648}
+
+  else if (n == 2 && size == 4) {132*4+12*2}
+  else if (n == 3 && size == 4) {320*4+16*2}
+  else if (n == 4 && size == 4) {508*4+20*2}
+  else if (n == 5 && size == 4) {648*4+24*2}
+  
+  else if (n == 2 && size == 6) {132*9+12*6}
+  else if (n == 3 && size == 6) {320*9+16*6}
+  else if (n == 4 && size == 6) {508*9+20*6}
+  else if (n == 5 && size == 6) {648*9+24*6}
+})
+```
+
+Utilizing the median absolute deviation (MAD) test, our aim is to identify and reject problematic data points in each simulation, specifically focusing on identifying which carbophene models have an unusual number of bonds broken on the edge. Generally, the MAD test identifies problamatic data based on the median, a central measure that is less affected by outliers, making it suitable for detecting said outliers even in datasets with non-normal distributions similar to ours.
+
+With the MAD test, we are comparing the observed bonds against each other by taking the median of the bonds broken on both the inside and on the edge. Then, comparing each bond in a specific data set to the observed median with a "very conservative" threshold of 3, defined in @Miller1991 and @Leys2013. This means we define the threshold for outliers anything plus or minus 3 times the median absolute deviation. If a datapoint is greater or lesser than this threshold, the simulation is considered an outlier, and effectively rejected.
+
+```{r, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+MADtest <- function(oi, oe){
+  # calculating the median & median absolute deviation (MAD)
+  medIn <- median(oi)
+  medOut <- median(oe)
+  madIn <- mad(oi)
+  madOut <- mad(oe)
+
+  # define outlier bounds (
+  lowBoundIn <- medIn - (3*madIn)
+  lowBoundOut <- medOut - (3*madOut)
+  upBoundIn <- medIn + (3*madIn)
+  upBoundOut <- medOut + (3*madOut)
+
+  # identify outliers & reject them
+  outliers <- (lowBoundIn > oi | oi > upBoundIn | lowBoundOut > oe | oe > upBoundOut)
+  result <- ifelse(outliers, "Reject", "Keep")
+  return(result)
+}
+```
+
+In the MAD test we compared the observed number of bonds on both the inside and on the edge with each other to reject outliers.  In performing the chi-squared statistic we'll change modes and define 2-by-2 matrices where one column is the observed number of breaks, both on the boundary and in the interior, while the other column (the expected values) is the number of bonds in the model.  Then a one-sided p-value is used in the test.
+
+
+```{r, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+# xiSquared <- Vectorize(function(oe, oi, ee, ei){
+#   m <- data_frame(observed = c(oe, oi),
+#                   expected = c(ee, ei))
+#   xi2.p <- chisq.test(m)$p.value
+  
+#   if (xi2.p <= 0.05) return("Reject")
+#   else return("Keep")
+
+# })
+```
+```{r, comment="", echo = FALSE, warning = FALSE,message = FALSE, eval=TRUE}
+capoverabundancetable <- SItable_nums(name = "overabundancetable.cap", caption = "Table of MAD test, 1-sided and 2-sided z-test determinations of if different Facets had an over abundance of broken edge bonds.")
+```
+
+Taken all together we can define a data frame which specifies which data sets may be problematic.  For example, just by eyeballing the N=3 case of NPT0Chenoweth2Pristine in `r SIfigure_nums("olddatajitter.cap", display = "cite")` we can see that there are likely too many replications where the bonds on the edge broke.  `r SItable_nums("overabundancetable.cap", display = "cite")` displays the results of these tests. 
+
+```{r, comment="", warning = FALSE,message = FALSE, eval=TRUE}
+edge.df <- carbophenes.reviewed.df %>% 
+  mutate(BondBrokenOnEdge = as.numeric(BondBrokenOnEdge) - 1)  %>% 
+  select(N, Size, MD, Ffield, Pressure, Replication, BondBrokenOnEdge,Functional) %>% 
+  group_by(Size, N, MD, Pressure, Ffield, Functional) %>% 
+  summarize(observed.edge = sum(BondBrokenOnEdge), observed.interior = length(BondBrokenOnEdge) - sum(BondBrokenOnEdge)) %>%
+  as_tibble() %>%
+  mutate(expected.edge = expected.edge.func(N, Size), expected.interior = expected.interior.func(N, Size)) %>%
+  mutate(median.abs.dev = MADtest(observed.edge, observed.interior),
+        #  z1.sided = one.sided.zstatistic(observed.edge, observed.interior, expected.edge, expected.interior),
+        #  chi.squred = xiSquared(observed.edge, observed.interior, expected.edge, expected.interior)#  %>%
+        )#  %>%
+#  select(-c(observed.edge, observed.interior, expected.edge, expected.interior))
+```
+
+<br/>
+
+
+
+```{r, fig.cap=capoverabundancetable, comment="", echo = FALSE, warning = FALSE,message = FALSE, eval=TRUE}
+reactable(as.matrix(edge.df), showPageSizeOptions = TRUE, pageSizeOptions = c(5, 50), defaultPageSize = 5, striped = TRUE)
+```
+<br/>
+
+<br/>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Determining the onset of melting
+
+### pristine results
+
+
+
+
+```{r,echo = FALSE, comment="", warning = FALSE,message = FALSE,  eval=TRUE}
+
+dodge <- position_dodge(width = 0.7)
+
+poster.df <- carbophenes.reviewed.df %>% filter(Ffield == "Kowalik", Functional == "Pristine", Size == 2, MD == c("AHNPT"))
+
+poster.one <- ggplot(poster.df,aes(x=N, y=Temperature, color=MD)) +
+         geom_boxplot(aes(fill = MD, colour=MD, fill=MD), outlier.size = 0) +
+         geom_jitter(position=dodge, aes(shape=factor(MD)), name="MD",size = I(1.25)) +
+         scale_fill_manual(name  = element_blank(), values = c("lightblue", "pink"), labels=c("AHNPT", "NPT")) +
+         scale_color_manual(name  = element_blank(), values = c("blue", "red"), labels=c("AHNPT", "NPT")) +
+         theme_bw() +
+         xlab("N-carbophene") +
+         ylab("Temperature [K]") +
+         scale_shape_discrete(name  = element_blank(), labels=c("AHNPT", "NPT")) +
+         theme(legend.box = "horizontal",
+               legend.justification = 'right',
+               legend.position="none",
+               legend.background = element_rect(size=0.05), 
+               legend.title=element_text(size=0),
+               legend.text=element_text(size=18),
+               axis.text.x = element_text(size=18, color = "black"),
+               axis.text.y = element_text(size=18, color = "black"),
+               axis.title.x = element_text(size = 25),
+               axis.title.y = element_text(size = 25),
+               panel.border=element_rect(colour = 'black', fill=NA, size = 1.25),
+               panel.grid.major = element_line(colour = 'lightgray', size = 0.5),
+               panel.grid.minor = element_line(colour = 'lightgray', size = 0.25),
+               panel.background = element_rect(size = 1))
+
+
+
+
+poster.one
+
+
+#pdf("/Users/junky/Desktop/PosterMeltingTemperatures.pdf",height = 6, width =9)
+
+#poster.one
+#dev.off()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r,echo = FALSE, comment="", warning = FALSE,message = FALSE,  eval=TRUE}
+
+
+poster.df <- carbophenes.reviewed.df %>% filter(Ffield == "Kowalik",N == 3, Size == 2, MD == "AHNPT")
+
+
+
+
+row.labels <- c(`Pristine` = "Pristine",`CO` = "CO",`COOH` = "COOH", `NH2` = bquote(NH[2]),`NO2` = bquote(NO[2]),`6` = "OH")
+
+
+
+
+
+
+
+
+KOWALIK.Functional.Size2 <- ggplot(poster.df,aes(x=Functional, y=Temperature, color=Functional)) +
+         geom_boxplot(aes(fill = Functional, colour=Functional, fill=Functional),outlier.size = 0) +
+         geom_jitter(position=dodge, aes(shape=factor(Functional)), name="Functional",size = I(1.25)) +
+         scale_fill_manual(name  = element_blank(), 
+                           values = c("lightblue", "pink", "lightgreen", "gray", "brown1", "coral")) +
+        scale_color_manual(name  = element_blank(), 
+                            values = c("blue", "red", "darkgreen", "black", "brown4", "coral3" )) +
+         theme_bw() +
+         xlab("Functional") +
+         ylab("Temperature [K]") +
+         scale_shape_discrete(name  = element_blank()) +
+         theme(legend.box = "horizontal",
+               legend.justification = 'right',
+               legend.position="none",
+               legend.background = element_rect(size=0.05), 
+               legend.title=element_text(size=0),
+               legend.text=element_text(size=15),
+               axis.text.x = element_text(size=18, color = "black"),
+               axis.text.y = element_text(size=18, color = "black"),
+               axis.title.x = element_text(size = 25),
+               axis.title.y = element_text(size = 25),
+               panel.border=element_rect(colour = 'black', fill=NA, size = 1.25),
+               panel.grid.major = element_line(colour = 'lightgray', size = 0.5),
+               panel.grid.minor = element_line(colour = 'lightgray', size = 0.25),
+               panel.background = element_rect(size = 1))   +
+     scale_x_discrete(labels=row.labels)
+
+KOWALIK.Functional.Size2
+
+
+```
+
+
+
+
+```{r,echo = FALSE, comment="", warning = FALSE,message = FALSE,  eval=TRUE}
+
+# pdf("/Users/neptoon/Desktop/Carbophenes/wilcoxN.pdf", width=11, height=7)
+
+wilcox.df <- carbophenes.reviewed.df %>% filter(Ffield == "Kowalik", Functional == "Pristine", Size == 2, MD == c("AHNPT"))
+
+kt <- kruskal.test(Temperature ~ N, data=wilcox.df)
+print(kt)
+
+if(kt$p.value < 0.05){
+  pt <- pairwise.wilcox.test(wilcox.df$Temperature, g=wilcox.df$N, p.adjust.method="BH")
+  print(pt)
+  print(typeof(pt))
+  }
+
+wilcox.poster.N <- ggplot(wilcox.df,aes(x=N, y=Temperature, color=MD)) +
+  geom_boxplot(aes(fill = MD, colour=MD, fill=MD), outlier.size = 0) +
+  geom_jitter(position=dodge, aes(shape=factor(MD)), name="MD",size = I(1.5)) +
+  scale_fill_manual(name  = element_blank(), values = c("lightblue", "pink"), labels=c("AHNPT", "NPT")) +
+  scale_color_manual(name  = element_blank(), values = c("blue", "red"), labels=c("AHNPT", "NPT")) +
+  theme_bw() +
+  xlab("N-carbophene") +
+  ylab("Temperature [K]") +
+  scale_shape_discrete(name  = element_blank(), labels=c("AHNPT", "NPT")) +
+  theme(legend.box = "horizontal",
+        legend.justification = 'right',
+        legend.position="none",
+        legend.background = element_rect(size=0.05), 
+        legend.title=element_text(size=0),
+        legend.text=element_text(size=18),
+        axis.text.x = element_text(size=22, color = "black"),
+        axis.text.y = element_text(size=22, color = "black"),
+        axis.title.x = element_text(size = 25),
+        axis.title.y = element_text(size = 25),
+        panel.border=element_rect(colour = 'black', fill=NA, size = 1.25),
+        panel.grid.major = element_line(colour = 'lightgray', size = 0.5),
+        panel.grid.minor = element_line(colour = 'lightgray', size = 0.25),
+        panel.background = element_rect(size = 1))
+
+wilcox.poster.N +
+  geom_line(data=tibble(x=c(3, 4.25), y=c(1400, 1400)),
+            aes(x=x, y=y),
+            inherit.aes=FALSE) +
+  geom_line(data=tibble(x=c(2, 4.25), y=c(1475, 1475)),
+            aes(x=x, y=y),
+            inherit.aes=FALSE) +
+  geom_line(data=tibble(x=c(1, 4.25), y=c(1670, 1670)),
+            aes(x=x, y=y),
+            inherit.aes=FALSE) +
+  geom_text(data=tibble(x=3.625, y=1405),
+            aes(x=x, y=y, label="*"), size=10,
+            inherit.aes=FALSE) +
+  geom_text(data=tibble(x=3.125, y=1480),
+            aes(x=x, y=y, label="*"), size=10,
+            inherit.aes=FALSE) +
+  geom_text(data=tibble(x=2.625, y=1670),
+            aes(x=x, y=y, label="*"), size=10,
+            inherit.aes=FALSE)
+
+wilcox.poster.N
+# dev.off()
+
+plt = matrix(
+  c(3.304105e-10, NA, NA, 9.001846e-15, 1.559590e-03, NA, 4.364898e-16, 1.075496e-07, 0.001400082),
+  nrow=3, 
+  ncol=3, 
+  byrow=TRUE
+)
+
+colnames(plt) = c("2", "3", "4")
+rownames(plt) = c("3", "4", "5")
+
+print(plt)
+
+corrplot(plt, method='circle', type="lower", is.corr = FALSE, title="N-Carbophene", col=COL2('RdBu', 200))
+
+```
+```{r,echo = FALSE, comment="", warning = FALSE,message = FALSE,  eval=TRUE}
+
+# pdf("/Users/neptoon/Desktop/Carbophenes/wilcoxFunctional.pdf", width=11, height=7)
+
+group.order <- Vectorize(function(Functional){
+  if (Functional == "OH") {1}
+  else if (Functional == "CO") {2}
+  else if (Functional == "COOH") {3}
+  else if (Functional == "NO2") {4}
+  else if (Functional == "NH2") {5}
+  else if (Functional == "Pristine") {6}
+})
+
+data.funct <- carbophenes.reviewed.df%>%
+  filter(Ffield == "Kowalik", N == 3, Size == 2, MD == c("AHNPT"))%>%
+  mutate(functionalorder = as.factor(group.order(Functional)))
+
+ktFunct <- kruskal.test(Temperature ~ Functional, data=data.funct)
+print(ktFunct)
+
+if(ktFunct$p.value < 0.05){
+  ptFunct <- pairwise.wilcox.test(data.funct$Temperature, g=data.funct$Functional, p.adjust.method = "BH")
+  print(ptFunct)
+}
+
+row.labels <- c('1' = "OH", '2' = "CO", '3' = "COOH", '4' = bquote(NO[2]), '5' = bquote(NH[2]), '6' = "Pristine")
+
+functCorrelation <- ggplot(data.funct, aes(x=functionalorder, y=Temperature, color=Functional)) +
+  geom_boxplot(aes(fill = Functional, colour=Functional, fill=Functional),outlier.size = 0) +
+  geom_jitter(position=dodge, aes(shape=factor(Functional)), name="Functional", size = I(1.5)) +
+  scale_fill_manual(name  = element_blank(), 
+                    values = c("coral", "pink", "lightgreen", "gray", "brown1", "lightblue")) +
+  scale_color_manual(name  = element_blank(), 
+                     values = c("coral3", "red", "darkgreen", "black", "brown4", "blue")) +
+  theme_bw() +
+  xlab("Functional") +
+  ylab("Temperature [K]") +
+  scale_shape_discrete(name  = element_blank()) +
+  theme(legend.box = "horizontal",
+        legend.justification = 'right',
+        legend.position="none",
+        legend.background = element_rect(size=0.05), 
+        legend.title=element_text(size=0),
+        legend.text=element_text(size=15),
+        axis.text.x = element_text(size=22, color = "black"),
+        axis.text.y = element_text(size=22, color = "black"),
+        axis.title.x = element_text(size = 25),
+        axis.title.y = element_text(size = 25),
+        panel.border=element_rect(colour = 'black', fill=NA, size = 1.25),
+        panel.grid.major = element_line(colour = 'lightgray', size = 0.5),
+        panel.grid.minor = element_line(colour = 'lightgray', size = 0.25),
+        panel.background = element_rect(size = 1))   +
+  scale_x_discrete(labels=row.labels)
+
+functCorrelation +
+  geom_line(data=tibble(x=c(0.75, 2.25), y=c(1165, 1165)),
+            aes(x=x, y=y),
+            inherit.aes=FALSE) +
+  geom_line(data=tibble(x=c(4.75, 6.25), y=c(1490, 1490)),
+            aes(x=x, y=y),
+            inherit.aes=FALSE) +
+  geom_text(data=tibble(x=1.5, y=1145),
+            aes(x=x, y=y, label="n.s."), size=7,
+            inherit.aes=FALSE) +
+  geom_text(data=tibble(x=5.5, y=1520),
+            aes(x=x, y=y, label="n.s."), size=7,
+            inherit.aes=FALSE)
+
+functCorrelation
+
+plt = matrix(
+  c(4.3e-07, NA, NA, NA, NA, 0.00121, 1.1e-10, NA, NA, NA, 8.7e-08, 5.6e-14, 0.00626, NA, NA, 0.75186, 8.8e-06, 0.00048, 5.6e-08, NA, 0.00211, 1.1e-10, 0.84154, 0.00822, 0.00141),
+  nrow=5, 
+  ncol=5, 
+  byrow=TRUE
+)
+
+colnames(plt) = c("CO", "COOH", "NH2", "NO2", "OH")
+rownames(plt) = c("COOH", "NH2", "NO2", "OH", "Pristine")
+
+print(plt)
+
+corrplot(plt, method='color', order='original', p.mat=plt, type="lower", is.corr = FALSE, col=COL2('RdYlBu', 200), tl.col="black", tl.srt=45)
+
+```
+```{r,echo = FALSE, comment="", warning = FALSE,message = FALSE,  eval=TRUE}
+
+wilcox.poster.N <- ggplot(wilcox.df,aes(x=N, y=Temperature, color=MD)) +
+  geom_boxplot(aes(fill = MD, colour=MD, fill=MD), outlier.size = 0) +
+  geom_jitter(position=dodge, aes(shape=factor(MD)), name="MD",size = I(1.25)) +
+  scale_fill_manual(name  = element_blank(), values = c("lightblue", "pink"), labels=c("AHNPT", "NPT")) +
+  scale_color_manual(name  = element_blank(), values = c("blue", "red"), labels=c("AHNPT", "NPT")) +
+  theme_bw() +
+  xlab("N-carbophene") +
+  ylab("Temperature [K]") +
+  scale_shape_discrete(name  = element_blank(), labels=c("AHNPT", "NPT")) +
+  theme(legend.box = "horizontal",
+        legend.justification = 'right',
+        legend.position="none",
+        legend.background = element_rect(size=0.05), 
+        legend.title=element_text(size=0),
+        legend.text=element_text(size=18),
+        axis.text.x = element_text(size=18, color = "black"),
+        axis.text.y = element_text(size=18, color = "black"),
+        axis.title.x = element_text(size = 25),
+        axis.title.y = element_text(size = 25),
+        panel.border=element_rect(colour = 'black', fill=NA, size = 1.25),
+        panel.grid.major = element_line(colour = 'lightgray', size = 0.5),
+        panel.grid.minor = element_line(colour = 'lightgray', size = 0.25),
+        panel.background = element_rect(size = 1))
+
+wilcox.poster.N +
+  geom_line(data=tibble(x=c(3, 4.25), y=c(1400, 1400)),
+            aes(x=x, y=y),
+            inherit.aes=FALSE) +
+  geom_line(data=tibble(x=c(2, 4.25), y=c(1475, 1475)),
+            aes(x=x, y=y),
+            inherit.aes=FALSE) +
+  geom_line(data=tibble(x=c(1, 4.25), y=c(1670, 1670)),
+            aes(x=x, y=y),
+            inherit.aes=FALSE) +
+  geom_text(data=tibble(x=3.625, y=1405),
+            aes(x=x, y=y, label="*"), size=7,
+            inherit.aes=FALSE) +
+  geom_text(data=tibble(x=3.125, y=1480),
+            aes(x=x, y=y, label="*"), size=7,
+            inherit.aes=FALSE) +
+  geom_text(data=tibble(x=2.625, y=1675),
+            aes(x=x, y=y, label="*"), size=7,
+            inherit.aes=FALSE)
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
